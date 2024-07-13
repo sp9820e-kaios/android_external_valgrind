@@ -75,7 +75,20 @@
    }                                                            \
 }
 
-
+/* Note about calculation of fp_min : fp_min is the lowest address
+   which can be accessed during unwinding. This is SP - VG_STACK_REDZONE_SZB.
+   On most platforms, this will be equal to SP (as VG_STACK_REDZONE_SZB
+   is 0). However, on some platforms (e.g. amd64), there is an accessible
+   redzone below the SP. Some CFI unwind info are generated, taking this
+   into account. As an example, the following is a CFI unwind info on
+   amd64 found for a 'retq' instruction:
+[0x400f7e .. 0x400f7e]: let cfa=oldSP+8 in RA=*(cfa+-8) SP=cfa+0 BP=*(cfa+-16)
+  0x400f7e: retq
+  As you can see, the previous BP is found 16 bytes below the cfa, which
+  is the oldSP+8. So, effectively, the BP is found 8 bytes below the SP.
+  The fp_min must take this into account, otherwise, VG_(use_CF_info) will
+  not unwind the BP. */
+   
 /* ------------------------ x86 ------------------------- */
 
 #if defined(VGP_x86_linux) || defined(VGP_x86_darwin)
@@ -129,11 +142,16 @@ static Addr fp_CF_verif_cache [N_FP_CF_VERIF];
    then they will not land in the same cache bucket.
 */
 
+/* cached result of VG_(FPO_info_present)(). Refreshed each time
+   the fp_CF_verif_generation is different of the current debuginfo
+   generation. */
+static Bool FPO_info_present = False;
+
 static UInt fp_CF_verif_generation = 0;
 // Our cache has to be maintained in sync with the CFI cache.
-// Each time the CFI cache is changed, its generation will be incremented.
+// Each time the debuginfo is changed, its generation will be incremented.
 // We will clear our cache when our saved generation differs from
-// the CFI cache generation.
+// the debuginfo generation.
 
 UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
                                /*OUT*/Addr* ips, UInt max_n_ips,
@@ -191,7 +209,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    uregs.xip = (Addr)startRegs->r_pc;
    uregs.xsp = (Addr)startRegs->r_sp;
    uregs.xbp = startRegs->misc.X86.r_ebp;
-   Addr fp_min = uregs.xsp;
+   Addr fp_min = uregs.xsp - VG_STACK_REDZONE_SZB;
 
    /* Snaffle IPs from the client's stack into ips[0 .. max_n_ips-1],
       stopping when the trail goes cold, which we guess to be
@@ -226,9 +244,10 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    } 
 #  endif
 
-   if (UNLIKELY (fp_CF_verif_generation != VG_(CF_info_generation)())) {
-      fp_CF_verif_generation = VG_(CF_info_generation)();
+   if (UNLIKELY (fp_CF_verif_generation != VG_(debuginfo_generation)())) {
+      fp_CF_verif_generation = VG_(debuginfo_generation)();
       VG_(memset)(&fp_CF_verif_cache, 0, sizeof(fp_CF_verif_cache));
+      FPO_info_present = VG_(FPO_info_present)();
    }
 
 
@@ -398,8 +417,9 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
       }
 
       /* And, similarly, try for MSVC FPO unwind info. */
-      if ( VG_(use_FPO_info)( &uregs.xip, &uregs.xsp, &uregs.xbp,
-                              fp_min, fp_max ) ) {
+      if (FPO_info_present
+          && VG_(use_FPO_info)( &uregs.xip, &uregs.xsp, &uregs.xbp,
+                                fp_min, fp_max ) ) {
          if (debug) unwind_case = "MS";
          if (do_stats) stats.MS++;
          goto unwind_done;
@@ -459,7 +479,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
                                const UnwindStartRegs* startRegs,
                                Addr fp_max_orig )
 {
-   Bool  debug = False;
+   const Bool  debug = False;
    Int   i;
    Addr  fp_max;
    UInt  n_found = 0;
@@ -472,7 +492,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    uregs.xip = startRegs->r_pc;
    uregs.xsp = startRegs->r_sp;
    uregs.xbp = startRegs->misc.AMD64.r_rbp;
-   Addr fp_min = uregs.xsp;
+   Addr fp_min = uregs.xsp - VG_STACK_REDZONE_SZB;
 
    /* Snaffle IPs from the client's stack into ips[0 .. max_n_ips-1],
       stopping when the trail goes cold, which we guess to be
@@ -513,6 +533,9 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    if (sps) sps[0] = uregs.xsp;
    if (fps) fps[0] = uregs.xbp;
    i = 1;
+   if (debug)
+      VG_(printf)("     ipsS[%d]=%#08lx rbp %#08lx rsp %#08lx\n",
+                  i-1, ips[i-1], uregs.xbp, uregs.xsp);
 
 #  if defined(VGO_darwin)
    if (VG_(is_valid_tid)(tid_if_known) &&
@@ -561,7 +584,8 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
          if (fps) fps[i] = uregs.xbp;
          ips[i++] = uregs.xip - 1; /* -1: refer to calling insn, not the RA */
          if (debug)
-            VG_(printf)("     ipsC[%d]=%#08lx\n", i-1, ips[i-1]);
+            VG_(printf)("     ipsC[%d]=%#08lx rbp %#08lx rsp %#08lx\n",
+                        i-1, ips[i-1], uregs.xbp, uregs.xsp);
          uregs.xip = uregs.xip - 1; /* as per comment at the head of this loop */
          if (UNLIKELY(cmrf > 0)) {RECURSIVE_MERGE(cmrf,ips,i);};
          continue;
@@ -590,7 +614,8 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
          if (fps) fps[i] = uregs.xbp;
          ips[i++] = uregs.xip - 1; /* -1: refer to calling insn, not the RA */
          if (debug)
-            VG_(printf)("     ipsF[%d]=%#08lx\n", i-1, ips[i-1]);
+            VG_(printf)("     ipsF[%d]=%#08lx rbp %#08lx rsp %#08lx\n",
+                        i-1, ips[i-1], uregs.xbp, uregs.xsp);
          uregs.xip = uregs.xip - 1; /* as per comment at the head of this loop */
          if (UNLIKELY(cmrf > 0)) {RECURSIVE_MERGE(cmrf,ips,i);};
          continue;
@@ -670,7 +695,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
 #  elif defined(VGP_ppc64be_linux) || defined(VGP_ppc64le_linux)
    Addr lr = startRegs->misc.PPC64.r_lr;
 #  endif
-   Addr fp_min = sp;
+   Addr fp_min = sp - VG_STACK_REDZONE_SZB;
 
    /* Snaffle IPs from the client's stack into ips[0 .. max_n_ips-1],
       stopping when the trail goes cold, which we guess to be
@@ -935,7 +960,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    uregs.r12 = startRegs->misc.ARM.r12;
    uregs.r11 = startRegs->misc.ARM.r11;
    uregs.r7  = startRegs->misc.ARM.r7;
-   Addr fp_min = uregs.r13;
+   Addr fp_min = uregs.r13 - VG_STACK_REDZONE_SZB;
 
    /* Snaffle IPs from the client's stack into ips[0 .. max_n_ips-1],
       stopping when the trail goes cold, which we guess to be
@@ -1079,7 +1104,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    uregs.sp = startRegs->r_sp;
    uregs.x30 = startRegs->misc.ARM64.x30;
    uregs.x29 = startRegs->misc.ARM64.x29;
-   Addr fp_min = uregs.sp;
+   Addr fp_min = uregs.sp - VG_STACK_REDZONE_SZB;
 
    /* Snaffle IPs from the client's stack into ips[0 .. max_n_ips-1],
       stopping when the trail goes cold, which we guess to be
@@ -1173,7 +1198,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    D3UnwindRegs uregs;
    uregs.ia = startRegs->r_pc;
    uregs.sp = startRegs->r_sp;
-   Addr fp_min = uregs.sp;
+   Addr fp_min = uregs.sp - VG_STACK_REDZONE_SZB;
    uregs.fp = startRegs->misc.S390X.r_fp;
    uregs.lr = startRegs->misc.S390X.r_lr;
 
@@ -1256,7 +1281,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    D3UnwindRegs uregs;
    uregs.pc = startRegs->r_pc;
    uregs.sp = startRegs->r_sp;
-   Addr fp_min = uregs.sp;
+   Addr fp_min = uregs.sp - VG_STACK_REDZONE_SZB;
 
 #if defined(VGP_mips32_linux)
    uregs.fp = startRegs->misc.MIPS32.r30;
@@ -1411,7 +1436,7 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId tid_if_known,
    D3UnwindRegs uregs;
    uregs.pc = startRegs->r_pc;
    uregs.sp = startRegs->r_sp;
-   Addr fp_min = uregs.sp;
+   Addr fp_min = uregs.sp - VG_STACK_REDZONE_SZB;
 
    uregs.fp = startRegs->misc.TILEGX.r52;
    uregs.lr = startRegs->misc.TILEGX.r55;

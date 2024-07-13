@@ -1697,27 +1697,7 @@ AC_SUBST(PREFERRED_STACK_BOUNDARY_2)
 
 
 # Convenience function to check whether GCC supports a particular
-# warning option. Takes two arguments, first the warning flag name
-# to check (without -W), then the conditional name to set if that
-# warning flag is supported.
-AC_DEFUN([AC_GCC_WARNING_COND],[
-  AC_MSG_CHECKING([if gcc accepts -W$1])
-  safe_CFLAGS=$CFLAGS
-  CFLAGS="-W$1"
-  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[;]])], [
-  has_warning_flag=yes
-  AC_MSG_RESULT([yes])], [
-  has_warning_flag=no
-  AC_MSG_RESULT([no])])
-  CFLAGS=$safe_CFLAGS
-  AM_CONDITIONAL([$2], test x$has_warning_flag = xyes)
-])
-
-AC_GCC_WARNING_COND([pointer-sign], [HAS_POINTER_SIGN_WARNING])
-
-# Convenience function to check whether GCC supports a particular
-# warning option. Similar to AC_GCC_WARNING_COND, but does a
-# substitution instead of setting an conditional. Takes two arguments,
+# warning option. Takes two arguments,
 # first the warning flag name to check (without -W), then the
 # substitution name to set with -Wno-warning-flag if the flag exists,
 # or the empty string if the compiler doesn't accept the flag. Note
@@ -1749,14 +1729,14 @@ AC_DEFUN([AC_GCC_WARNING_SUBST],[
   CFLAGS=$safe_CFLAGS
 ])
 
-AC_GCC_WARNING_SUBST_NO([empty-body], [FLAG_W_NO_EMPTY_BODY])
-AC_GCC_WARNING_SUBST_NO([format-zero-length], [FLAG_W_NO_FORMAT_ZERO_LENGTH])
 AC_GCC_WARNING_SUBST_NO([nonnull], [FLAG_W_NO_NONNULL])
 AC_GCC_WARNING_SUBST_NO([overflow], [FLAG_W_NO_OVERFLOW])
+AC_GCC_WARNING_SUBST_NO([pointer-sign], [FLAG_W_NO_POINTER_SIGN])
 AC_GCC_WARNING_SUBST_NO([uninitialized], [FLAG_W_NO_UNINITIALIZED])
 AC_GCC_WARNING_SUBST_NO([unused-function], [FLAG_W_NO_UNUSED_FUNCTION])
 AC_GCC_WARNING_SUBST_NO([static-local-in-inline], [FLAG_W_NO_STATIC_LOCAL_IN_INLINE])
 AC_GCC_WARNING_SUBST([write-strings], [FLAG_W_WRITE_STRINGS])
+AC_GCC_WARNING_SUBST([empty-body], [FLAG_W_EMPTY_BODY])
 AC_GCC_WARNING_SUBST([format], [FLAG_W_FORMAT])
 AC_GCC_WARNING_SUBST([format-security], [FLAG_W_FORMAT_SECURITY])
 AC_GCC_WARNING_SUBST([cast-qual], [FLAG_W_CAST_QUAL])
@@ -1810,6 +1790,33 @@ AC_MSG_RESULT([no])
 CFLAGS=$safe_CFLAGS
 
 AC_SUBST(FLAG_FNO_STACK_PROTECTOR)
+
+# Does GCC support disabling Identical Code Folding?
+# We want to disabled Identical Code Folding for the
+# tools preload shared objects to get better backraces.
+# For GCC 5.1+ -fipa-icf is enabled by default at -O2.
+# "The optimization reduces code size and may disturb
+#  unwind stacks by replacing a function by equivalent
+#  one with a different name."
+AC_MSG_CHECKING([if gcc accepts -fno-ipa-icf])
+
+safe_CFLAGS=$CFLAGS
+CFLAGS="-fno-ipa-icf"
+
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[
+  return 0;
+]])], [
+no_ipa_icf=yes
+FLAG_FNO_IPA_ICF="-fno-ipa-icf"
+AC_MSG_RESULT([yes])
+], [
+no_ipa_icf=no
+FLAG_FNO_IPA_ICF=""
+AC_MSG_RESULT([no])
+])
+CFLAGS=$safe_CFLAGS
+
+AC_SUBST(FLAG_FNO_IPA_ICF)
 
 
 # Does this compiler support -fsanitize=undefined?
@@ -3037,6 +3044,8 @@ AC_CONFIG_FILES([
    none/tests/darwin/Makefile
    none/tests/amd64-linux/Makefile
    none/tests/x86-linux/Makefile
+   none/tests/amd64-darwin/Makefile
+   none/tests/x86-darwin/Makefile
    exp-sgcheck/Makefile
    exp-sgcheck/tests/Makefile
    drd/Makefile

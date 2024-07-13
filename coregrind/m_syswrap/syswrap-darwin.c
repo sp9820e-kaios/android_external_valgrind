@@ -4963,6 +4963,154 @@ PRE(host_request_notification)
 }
 
 
+PRE(host_create_mach_voucher)
+{
+#pragma pack(4)
+    typedef struct {
+        mach_msg_header_t Head;
+        NDR_record_t NDR;
+        mach_msg_type_number_t recipesCnt;
+        uint8_t recipes[5120];
+    } Request;
+#pragma pack()
+    
+    Request *req = (Request *)ARG1;
+
+    PRINT("host_create_mach_voucher(count %u)",
+          req->recipesCnt);
+    
+    AFTER = POST_FN(host_create_mach_voucher);
+}
+
+
+POST(host_create_mach_voucher)
+{
+#pragma pack(4)
+    typedef struct {
+        mach_msg_header_t Head;
+        /* start of the kernel processed data */
+        mach_msg_body_t msgh_body;
+        mach_msg_port_descriptor_t voucher;
+        /* end of the kernel processed data */
+    } Reply;
+#pragma pack()
+    
+    Reply *reply = (Reply *)ARG1;
+
+    // RK fixme properly parse this return type
+    PRINT("got voucher %#x ", reply->voucher.name);
+}
+
+
+PRE(host_get_special_port)
+{
+#pragma pack(4)
+    typedef struct {
+        mach_msg_header_t Head;
+        NDR_record_t NDR;
+        int node;
+        int which;
+    } Request;
+#pragma pack()
+    
+    Request *req = (Request *)ARG1;
+
+    PRINT("host_get_special_port(node %d)", req->node);
+    
+    switch (req->which) {
+        case HOST_PORT:
+            PRINT("host_get_special_port(%s, HOST_PORT)",
+                  name_for_port(MACH_REMOTE));
+            break;
+        case HOST_PRIV_PORT:
+            PRINT("host_get_special_port(%s, HOST_PRIV_PORT)",
+                  name_for_port(MACH_REMOTE));
+            break;
+        case HOST_IO_MASTER_PORT:
+            PRINT("host_get_special_port(%s, HOST_IO_MASTER_PORT)",
+                  name_for_port(MACH_REMOTE));
+            break;
+        // Not provided by kernel
+        case HOST_DYNAMIC_PAGER_PORT:
+            PRINT("host_get_special_port(%s, HOST_DYNAMIC_PAGER_PORT)",
+                  name_for_port(MACH_REMOTE));
+            break;
+        case HOST_AUDIT_CONTROL_PORT:
+            PRINT("host_get_special_port(%s, HOST_AUDIT_CONTROL_PORT)",
+                  name_for_port(MACH_REMOTE));
+            break;
+        case HOST_USER_NOTIFICATION_PORT:
+            PRINT("host_get_special_port(%s, HOST_USER_NOTIFICATION_PORT)",
+                  name_for_port(MACH_REMOTE));
+            break;
+        // ...
+
+        default:
+            PRINT("host_get_special_port(%s, %d)",
+                  name_for_port(MACH_REMOTE), req->which);
+            break;
+    }
+    
+    MACH_ARG(host_get_special_port.which) = req->which;
+    
+    AFTER = POST_FN(host_get_special_port);
+}
+
+
+POST(host_get_special_port)
+{
+#pragma pack(4)
+    typedef struct {
+        mach_msg_header_t Head;
+        /* start of the kernel processed data */
+        mach_msg_body_t msgh_body;
+        mach_msg_port_descriptor_t port;
+        /* end of the kernel processed data */
+    } Reply;
+#pragma pack()
+    
+    Reply *reply = (Reply *)ARG1;
+    
+    PRINT("got port %#x ", reply->port.name);
+
+    /* The required entry in the allocated_ports list (mapping) might
+     not exist, due perhaps to broken syscall wrappers (mach__N etc).
+     Create a minimal entry so that assign_port_name below doesn't
+     cause an assertion. */
+    if (!port_exists(reply->port.name)) {
+        port_create_vanilla(reply->port.name);
+    }
+    
+    switch (MACH_ARG(host_get_special_port.which)) {
+        case HOST_PORT:
+            assign_port_name(reply->port.name, "port-%p");
+            break;
+        case HOST_PRIV_PORT:
+            assign_port_name(reply->port.name, "priv-%p");
+            break;
+        case HOST_IO_MASTER_PORT:
+            assign_port_name(reply->port.name, "io-master-%p");
+            break;
+        // Not provided by kernel
+        case HOST_DYNAMIC_PAGER_PORT:
+            assign_port_name(reply->port.name, "dynamic-pager-%p");
+            break;
+        case HOST_AUDIT_CONTROL_PORT:
+            assign_port_name(reply->port.name, "audit-control-%p");
+            break;
+        case HOST_USER_NOTIFICATION_PORT:
+            assign_port_name(reply->port.name, "user-notification-%p");
+            break;
+        // ...
+
+        default:
+            assign_port_name(reply->port.name, "special-%p");
+            break;
+    }
+    
+    PRINT("%s", name_for_port(reply->port.name));
+}
+
 /* ---------------------------------------------------------------------
    mach_msg: messages to a task
    ------------------------------------------------------------------ */
@@ -7739,6 +7887,13 @@ PRE(mach_msg_host)
    case 217:
       CALL_PRE(host_request_notification);
       return;
+   case 222:
+      CALL_PRE(host_create_mach_voucher);
+      return;
+           
+   case 412:
+      CALL_PRE(host_get_special_port);
+      return;
 
    default:
       // unknown message to host self
@@ -9986,17 +10141,27 @@ const SyscallTableEntry ML_(mach_trap_table)[] = {
    MACX_(__NR_semaphore_timedwait_signal_trap, semaphore_timedwait_signal), 
    _____(VG_DARWIN_SYSCALL_CONSTRUCT_MACH(40)),    // -40
 
-#if defined(VGA_x86)
-// _____(__NR_init_process), 
-   _____(VG_DARWIN_SYSCALL_CONSTRUCT_MACH(42)), 
-// _____(__NR_map_fd), 
-#else
 #  if DARWIN_VERS >= DARWIN_10_9
    MACX_(__NR_kernelrpc_mach_port_guard_trap, kernelrpc_mach_port_guard_trap),
    MACX_(__NR_kernelrpc_mach_port_unguard_trap, kernelrpc_mach_port_unguard_trap),
+#  else
+   _____(VG_DARWIN_SYSCALL_CONSTRUCT_MACH(41)),
+   _____(VG_DARWIN_SYSCALL_CONSTRUCT_MACH(42)),
 #  endif
-   _____(VG_DARWIN_SYSCALL_CONSTRUCT_MACH(43)), 
-#endif
+
+#  if DARWIN_VERS >= DARWIN_10_10
+   _____(VG_DARWIN_SYSCALL_CONSTRUCT_MACH(43)),
+#  else
+#    if DARWIN_VERS == DARWIN_10_9
+// _____(__NR_map_fd),
+#    else
+#      if defined(VGA_x86)
+// _____(__NR_map_fd), 
+#      else
+   _____(VG_DARWIN_SYSCALL_CONSTRUCT_MACH(43)),
+#      endif
+#    endif
+#  endif
 
 // _____(__NR_task_name_for_pid), 
    MACXY(__NR_task_for_pid, task_for_pid), 

@@ -646,7 +646,10 @@ Addr setup_client_stack( void*  init_sp,
          case AT_GID:
          case AT_EGID:
          case AT_CLKTCK:
-#        if !defined(__ANDROID__)
+#        if !defined(VGPV_arm_linux_android) \
+            && !defined(VGPV_x86_linux_android) \
+            && !defined(VGPV_mips32_linux_android) \
+            && !defined(VGPV_arm64_linux_android)
          case AT_FPUCW: /* missing on android */
 #        endif
             /* All these are pointerless, so we don't need to do
